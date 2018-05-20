@@ -23,6 +23,30 @@ type Response struct {
 	Body          []byte
 }
 
+func printHistrogram(times []time.Duration, maxTime time.Duration, minTime time.Duration) {
+	scalingFactor := float64(100) / float64(len(times))
+	var buckets [5]int64
+	bucketLength := float64(maxTime-minTime) / 4
+	for _, responseTime := range times {
+		bucketTime := time.Duration(responseTime) - minTime
+		bucket := int(float64(bucketTime) / bucketLength)
+		buckets[bucket]++
+	}
+	for index, bucket := range buckets {
+		bucketStart := minTime + (time.Duration(bucketLength) * time.Duration(index))
+		bucketEnd := minTime + (time.Duration(bucketLength) * time.Duration(index+1))
+		fmt.Printf("(%3d%%) ", int(float64(bucket)*scalingFactor))
+		for i := 0; i < int(float64(bucket)*scalingFactor); i += 2 {
+			fmt.Print("∎")
+			if i == int(bucket)-1 {
+				fmt.Print(" ")
+			}
+		}
+		fmt.Printf("[%v - %v]", bucketStart, bucketEnd)
+		fmt.Println()
+	}
+}
+
 func fetchURL(ack chan<- Response, url string) {
 	response := Response{OK: true, StartTime: time.Now()}
 	resp, err := http.Get(url)
@@ -56,8 +80,10 @@ func main() {
 	fmt.Println("Thrashing", url)
 	var concurrency int
 	var numRequests int
+	var histogram bool
 	flag.IntVar(&concurrency, "c", DEFAULT_CONCURRENCY, "how much concurrency")
 	flag.IntVar(&numRequests, "n", DEFAULT_NUM_REQUESTS, "how many requests")
+	flag.BoolVar(&histogram, "h", false, "print response time histogram")
 	flag.Parse()
 	fmt.Println("Concurrency", concurrency, "Num Requests", numRequests)
 
@@ -110,9 +136,12 @@ func main() {
 
 	pctOK := int((float64(numOK) / float64(numRequests)) * 100)
 	avgResponseTime := time.Duration(float64(sumResponseTimes) / float64(numOK))
-	fmt.Printf("OK: %d%%\n", pctOK)
+	fmt.Printf("Responses OK: %d%%\n", pctOK)
 	fmt.Printf("Bytes Transferred: %d\n", bytesTransferred)
 	fmt.Printf("Avg Response Time: %v\n", avgResponseTime)
-	fmt.Printf("Max Response Time %v\n", maxResponseTime)
 	fmt.Printf("Min Response Time %v\n", minResponseTime)
+	fmt.Printf("Max Response Time %v\n", maxResponseTime)
+	if histogram {
+		printHistrogram(responseTimes, maxResponseTime, minResponseTime)
+	}
 }
