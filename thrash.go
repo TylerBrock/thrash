@@ -7,6 +7,8 @@ import (
 	"net/http"
 	"os"
 	"time"
+
+	"github.com/cheggaaa/pb"
 )
 
 const DEFAULT_NUM_REQUESTS = 100
@@ -47,9 +49,14 @@ func printHistrogram(times []time.Duration, maxTime time.Duration, minTime time.
 	}
 }
 
-func fetchURL(ack chan<- Response, url string) {
+func fetchURL(ack chan<- Response, url string, client *http.Client) {
+	req, err := http.NewRequest("GET", url, nil)
+	if err != nil {
+		fmt.Println("Error creating new request")
+	}
+
 	response := Response{OK: true, StartTime: time.Now()}
-	resp, err := http.Get(url)
+	resp, err := client.Do(req)
 	response.EndTime = time.Now()
 
 	if err != nil {
@@ -90,12 +97,20 @@ func main() {
 	sem := make(chan bool, concurrency)
 	ack := make(chan Response, numRequests)
 
+	clients := make([]*http.Client, concurrency)
+	for i := 0; i < concurrency; i++ {
+		clients[i] = &http.Client{}
+	}
+
+	bar := pb.StartNew(numRequests)
+
 	// Queue up the requests
 	for i := 0; i < numRequests; i++ {
 		sem <- true
 		go func() {
 			defer func() { <-sem }()
-			fetchURL(ack, url)
+			fetchURL(ack, url, clients[i%concurrency])
+			bar.Increment()
 		}()
 	}
 
