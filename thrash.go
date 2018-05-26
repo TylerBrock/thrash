@@ -9,6 +9,7 @@ import (
 	"log"
 	"net/http"
 	_ "net/http/pprof"
+	"net/url"
 	"os"
 	"time"
 
@@ -170,8 +171,14 @@ func startProfiler() {
 }
 
 func main() {
-	url := os.Args[len(os.Args)-1]
-	fmt.Println("Thrashing", url)
+	urlArg := os.Args[len(os.Args)-1]
+	_, err := url.ParseRequestURI(urlArg)
+	if err != nil {
+		fmt.Printf("Error: \"%s\" does not look like a valid url!\n", urlArg)
+		os.Exit(1)
+	}
+
+	fmt.Println("Thrashing", urlArg)
 	var concurrency int
 	var numRequests int
 	var timeout time.Duration
@@ -210,7 +217,7 @@ func main() {
 		sem <- true
 		go func() {
 			defer func() { <-sem }()
-			fetchURL(ack, url, &client)
+			fetchURL(ack, urlArg, &client)
 			bar.Increment()
 		}()
 	}
