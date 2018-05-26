@@ -18,7 +18,7 @@ import (
 
 const DEFAULT_NUM_REQUESTS = 100
 const DEFAULT_CONCURRENCY = 1
-const DEFAULT_TIMEOUT = "1s"
+const DEFAULT_TIMEOUT = "60s"
 
 type Response struct {
 	OK            bool
@@ -160,10 +160,13 @@ func fetchURL(ack chan<- *Response, url string, client *http.Client) {
 	ack <- response
 }
 
-func main() {
+func startProfiler() {
 	go func() {
 		log.Println(http.ListenAndServe("localhost:6060", nil))
 	}()
+}
+
+func main() {
 	url := os.Args[len(os.Args)-1]
 	fmt.Println("Thrashing", url)
 	var concurrency int
@@ -171,30 +174,31 @@ func main() {
 	var timeout time.Duration
 	var histogram bool
 	var printErrors bool
+	var profile bool
 	defaultTimeoutDuration, _ := time.ParseDuration(DEFAULT_TIMEOUT)
 	flag.IntVar(&concurrency, "c", DEFAULT_CONCURRENCY, "how much concurrency")
 	flag.IntVar(&numRequests, "n", DEFAULT_NUM_REQUESTS, "how many requests")
 	flag.DurationVar(&timeout, "t", defaultTimeoutDuration, "request timeout in MS")
 	flag.BoolVar(&histogram, "h", false, "print response time histogram")
 	flag.BoolVar(&printErrors, "e", false, "print errors")
+	flag.BoolVar(&profile, "p", false, "start the profile server on port 6060")
 	flag.Parse()
 
 	p := message.NewPrinter(message.MatchLanguage("en"))
 	p.Println("Concurrency", concurrency, "Num Requests", numRequests)
 
+	if profile {
+		startProfiler()
+	}
+
 	sem := make(chan bool, concurrency)
 	ack := make(chan *Response, numRequests)
 
-	numClients := concurrency
-
-	clients := make([]*http.Client, numClients)
 	tr := &http.Transport{
-		MaxIdleConns:        0,
-		MaxIdleConnsPerHost: 1000,
+		MaxIdleConns:        concurrency,
+		MaxIdleConnsPerHost: concurrency,
 	}
-	for i := 0; i < numClients; i++ {
-		clients[i] = &http.Client{Transport: tr, Timeout: timeout}
-	}
+	client := http.Client{Transport: tr, Timeout: timeout}
 
 	bar := pb.StartNew(numRequests)
 
@@ -203,24 +207,22 @@ func main() {
 		sem <- true
 		go func() {
 			defer func() { <-sem }()
-			clientNum := i % len(clients)
-			fetchURL(ack, url, clients[clientNum])
-			bar.Increment()
+			fetchURL(ack, url, &client)
 		}()
 	}
-
-	bar.Finish()
 
 	summary := ResponseSummary{}
 
 	// Collect the responses
 	for i := 0; i < numRequests; i++ {
 		response := <-ack
+		bar.Increment()
 		summary.addResponse(response)
 		if response.OK != true && printErrors {
 			fmt.Println(response.Error)
 		}
 	}
+	bar.Finish()
 
 	summary.print()
 	if histogram {
