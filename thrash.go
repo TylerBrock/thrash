@@ -18,6 +18,7 @@ import (
 
 const DEFAULT_NUM_REQUESTS = 100
 const DEFAULT_CONCURRENCY = 1
+const DEFAULT_TIMEOUT = "1s"
 
 type Response struct {
 	OK            bool
@@ -30,18 +31,85 @@ type Response struct {
 	Body          []byte
 }
 
-func printHistrogram(times []time.Duration, maxTime time.Duration, minTime time.Duration) {
-	scalingFactor := float64(100) / float64(len(times))
+type ResponseSummary struct {
+	NumResponses     int
+	NumOK            int
+	BytesTransferred int64
+	SumResponseTimes time.Duration
+	MaxResponseTime  time.Duration
+	MinResponseTime  time.Duration
+	ResponseTimes    []time.Duration
+	StatusCounts     map[int]int
+	Errors           []error
+}
+
+func (s *ResponseSummary) addResponse(r *Response) {
+	s.NumResponses++
+
+	if r.OK == false {
+		s.Errors = append(s.Errors, r.Error)
+		return
+	}
+
+	s.NumOK++
+
+	if s.StatusCounts == nil {
+		s.StatusCounts = map[int]int{}
+	}
+	s.StatusCounts[r.StatusCode]++
+
+	if r.ContentLength != -1 {
+		s.BytesTransferred += r.ContentLength
+	}
+
+	responseTime := r.EndTime.Sub(r.StartTime)
+	s.ResponseTimes = append(s.ResponseTimes, responseTime)
+
+	s.SumResponseTimes += responseTime
+
+	if s.MaxResponseTime == 0 {
+		s.MaxResponseTime = responseTime
+	}
+
+	if s.MinResponseTime == 0 {
+		s.MinResponseTime = responseTime
+	}
+
+	if responseTime > s.MaxResponseTime {
+		s.MaxResponseTime = responseTime
+	}
+
+	if responseTime < s.MinResponseTime {
+		s.MinResponseTime = responseTime
+	}
+}
+
+func (s *ResponseSummary) print() {
+	statusCountsString, _ := json.Marshal(s.StatusCounts)
+
+	pctOK := int((float64(s.NumOK) / float64(s.NumResponses)) * 100)
+	avgResponseTime := time.Duration(float64(s.SumResponseTimes) / float64(s.NumOK))
+	p := message.NewPrinter(message.MatchLanguage("en"))
+	p.Printf("Responses OK: %d%% (%d/%d), Errors: %d\n", pctOK, s.NumOK, s.NumResponses, len(s.Errors))
+	p.Printf("Status Codes: %s\n", statusCountsString)
+	p.Printf("Bytes Transferred: %d\n", s.BytesTransferred)
+	p.Printf("Avg Response Time: %v\n", avgResponseTime)
+	p.Printf("Min Response Time %v\n", s.MinResponseTime)
+	p.Printf("Max Response Time %v\n", s.MaxResponseTime)
+}
+
+func (s *ResponseSummary) printHistogram() {
+	scalingFactor := float64(100) / float64(len(s.ResponseTimes))
 	var buckets [5]int64
-	bucketLength := float64(maxTime-minTime) / 4
-	for _, responseTime := range times {
-		bucketTime := time.Duration(responseTime) - minTime
+	bucketLength := float64(s.MaxResponseTime-s.MinResponseTime) / 4
+	for _, responseTime := range s.ResponseTimes {
+		bucketTime := time.Duration(responseTime) - s.MinResponseTime
 		bucket := int(float64(bucketTime) / bucketLength)
 		buckets[bucket]++
 	}
 	for index, bucket := range buckets {
-		bucketStart := minTime + (time.Duration(bucketLength) * time.Duration(index))
-		bucketEnd := minTime + (time.Duration(bucketLength) * time.Duration(index+1))
+		bucketStart := s.MinResponseTime + (time.Duration(bucketLength) * time.Duration(index))
+		bucketEnd := s.MinResponseTime + (time.Duration(bucketLength) * time.Duration(index+1))
 		fmt.Printf("(%3d%%) ", int(float64(bucket)*scalingFactor))
 		for i := 0; i < int(float64(bucket)*scalingFactor); i += 2 {
 			fmt.Print("∎")
@@ -95,9 +163,12 @@ func main() {
 	fmt.Println("Thrashing", url)
 	var concurrency int
 	var numRequests int
+	var timeout time.Duration
 	var histogram bool
+	defaultTimeoutDuration, _ := time.ParseDuration(DEFAULT_TIMEOUT)
 	flag.IntVar(&concurrency, "c", DEFAULT_CONCURRENCY, "how much concurrency")
 	flag.IntVar(&numRequests, "n", DEFAULT_NUM_REQUESTS, "how many requests")
+	flag.DurationVar(&timeout, "t", defaultTimeoutDuration, "request timeout in MS")
 	flag.BoolVar(&histogram, "h", false, "print response time histogram")
 	flag.Parse()
 
@@ -115,7 +186,7 @@ func main() {
 		MaxIdleConnsPerHost: 1000,
 	}
 	for i := 0; i < numClients; i++ {
-		clients[i] = &http.Client{Transport: tr}
+		clients[i] = &http.Client{Transport: tr, Timeout: timeout}
 	}
 
 	bar := pb.StartNew(numRequests)
@@ -133,53 +204,16 @@ func main() {
 
 	bar.Finish()
 
-	var numOK int
-	var bytesTransferred int64
-	var responseTimes = make([]time.Duration, numRequests)
-	statusCounts := map[int]int{}
+	summary := ResponseSummary{}
 
 	// Collect the responses
 	for i := 0; i < numRequests; i++ {
 		response := <-ack
-		if response.OK {
-			numOK++
-			statusCounts[response.StatusCode]++
-			if response.ContentLength != -1 {
-				bytesTransferred += response.ContentLength
-			}
-			responseTime := response.EndTime.Sub(response.StartTime)
-			responseTimes[i] = responseTime
-		} else {
-			p.Println("Error:", response.Error)
-		}
+		summary.addResponse(response)
 	}
 
-	var sumResponseTimes time.Duration
-	maxResponseTime := responseTimes[0]
-	minResponseTime := responseTimes[0]
-
-	for i := 0; i < numRequests; i++ {
-		responseTime := responseTimes[i]
-		sumResponseTimes += responseTime
-
-		if responseTime > maxResponseTime {
-			maxResponseTime = responseTime
-		}
-		if responseTime < minResponseTime {
-			minResponseTime = responseTime
-		}
-	}
-	statusCountsString, _ := json.Marshal(statusCounts)
-
-	pctOK := int((float64(numOK) / float64(numRequests)) * 100)
-	avgResponseTime := time.Duration(float64(sumResponseTimes) / float64(numOK))
-	p.Printf("Responses OK: %d%% (%d/%d)\n", pctOK, numOK, numRequests)
-	p.Printf("Status Codes: %s\n", statusCountsString)
-	p.Printf("Bytes Transferred: %d\n", bytesTransferred)
-	p.Printf("Avg Response Time: %v\n", avgResponseTime)
-	p.Printf("Min Response Time %v\n", minResponseTime)
-	p.Printf("Max Response Time %v\n", maxResponseTime)
+	summary.print()
 	if histogram {
-		printHistrogram(responseTimes, maxResponseTime, minResponseTime)
+		summary.printHistogram()
 	}
 }
