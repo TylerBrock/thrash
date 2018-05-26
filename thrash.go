@@ -87,7 +87,10 @@ func (s *ResponseSummary) print() {
 	statusCountsString, _ := json.Marshal(s.StatusCounts)
 
 	pctOK := int((float64(s.NumOK) / float64(s.NumResponses)) * 100)
-	avgResponseTime := time.Duration(float64(s.SumResponseTimes) / float64(s.NumOK))
+	avgResponseTime := time.Duration(0)
+	if s.NumOK != 0 {
+		avgResponseTime = time.Duration(float64(s.SumResponseTimes) / float64(s.NumOK))
+	}
 	p := message.NewPrinter(message.MatchLanguage("en"))
 	p.Printf("Responses OK: %d%% (%d/%d), Errors: %d\n", pctOK, s.NumOK, s.NumResponses, len(s.Errors))
 	p.Printf("Status Codes: %s\n", statusCountsString)
