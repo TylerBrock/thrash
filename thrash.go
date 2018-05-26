@@ -28,7 +28,6 @@ type Response struct {
 	Status        string
 	StatusCode    int
 	ContentLength int64
-	Body          []byte
 }
 
 type ResponseSummary struct {
