@@ -97,6 +97,12 @@ func (s *ResponseSummary) print() {
 	p.Printf("Max Response Time %v\n", s.MaxResponseTime)
 }
 
+func (s *ResponseSummary) printErrors() {
+	for _, err := range s.Errors {
+		fmt.Println(err)
+	}
+}
+
 func (s *ResponseSummary) printHistogram() {
 	scalingFactor := float64(100) / float64(len(s.ResponseTimes))
 	var buckets [5]int64
@@ -164,11 +170,13 @@ func main() {
 	var numRequests int
 	var timeout time.Duration
 	var histogram bool
+	var printErrors bool
 	defaultTimeoutDuration, _ := time.ParseDuration(DEFAULT_TIMEOUT)
 	flag.IntVar(&concurrency, "c", DEFAULT_CONCURRENCY, "how much concurrency")
 	flag.IntVar(&numRequests, "n", DEFAULT_NUM_REQUESTS, "how many requests")
 	flag.DurationVar(&timeout, "t", defaultTimeoutDuration, "request timeout in MS")
 	flag.BoolVar(&histogram, "h", false, "print response time histogram")
+	flag.BoolVar(&printErrors, "e", false, "print errors")
 	flag.Parse()
 
 	p := message.NewPrinter(message.MatchLanguage("en"))
@@ -209,6 +217,9 @@ func main() {
 	for i := 0; i < numRequests; i++ {
 		response := <-ack
 		summary.addResponse(response)
+		if response.OK != true && printErrors {
+			fmt.Println(response.Error)
+		}
 	}
 
 	summary.print()
