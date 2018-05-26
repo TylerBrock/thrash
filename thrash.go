@@ -1,14 +1,19 @@
 package main
 
 import (
+	"encoding/json"
 	"flag"
 	"fmt"
+	"io"
 	"io/ioutil"
+	"log"
 	"net/http"
+	_ "net/http/pprof"
 	"os"
 	"time"
 
 	"github.com/cheggaaa/pb"
+	"golang.org/x/text/message"
 )
 
 const DEFAULT_NUM_REQUESTS = 100
@@ -49,13 +54,13 @@ func printHistrogram(times []time.Duration, maxTime time.Duration, minTime time.
 	}
 }
 
-func fetchURL(ack chan<- Response, url string, client *http.Client) {
+func fetchURL(ack chan<- *Response, url string, client *http.Client) {
 	req, err := http.NewRequest("GET", url, nil)
 	if err != nil {
 		fmt.Println("Error creating new request")
 	}
 
-	response := Response{OK: true, StartTime: time.Now()}
+	response := &Response{OK: true, StartTime: time.Now()}
 	resp, err := client.Do(req)
 	response.EndTime = time.Now()
 
@@ -71,11 +76,11 @@ func fetchURL(ack chan<- Response, url string, client *http.Client) {
 	response.ContentLength = resp.ContentLength
 
 	defer resp.Body.Close()
-	body, err := ioutil.ReadAll(resp.Body)
+	_, err = io.Copy(ioutil.Discard, resp.Body)
 
-	if err == nil {
-		response.Body = body
-	} else {
+	if err != nil {
+		response.OK = false
+		response.Error = err
 		fmt.Println("Error reading response body", err)
 	}
 
@@ -83,6 +88,9 @@ func fetchURL(ack chan<- Response, url string, client *http.Client) {
 }
 
 func main() {
+	go func() {
+		log.Println(http.ListenAndServe("localhost:6060", nil))
+	}()
 	url := os.Args[len(os.Args)-1]
 	fmt.Println("Thrashing", url)
 	var concurrency int
@@ -92,14 +100,22 @@ func main() {
 	flag.IntVar(&numRequests, "n", DEFAULT_NUM_REQUESTS, "how many requests")
 	flag.BoolVar(&histogram, "h", false, "print response time histogram")
 	flag.Parse()
-	fmt.Println("Concurrency", concurrency, "Num Requests", numRequests)
+
+	p := message.NewPrinter(message.MatchLanguage("en"))
+	p.Println("Concurrency", concurrency, "Num Requests", numRequests)
 
 	sem := make(chan bool, concurrency)
-	ack := make(chan Response, numRequests)
+	ack := make(chan *Response, numRequests)
 
-	clients := make([]*http.Client, concurrency)
-	for i := 0; i < concurrency; i++ {
-		clients[i] = &http.Client{}
+	numClients := concurrency
+
+	clients := make([]*http.Client, numClients)
+	tr := &http.Transport{
+		MaxIdleConns:        0,
+		MaxIdleConnsPerHost: 1000,
+	}
+	for i := 0; i < numClients; i++ {
+		clients[i] = &http.Client{Transport: tr}
 	}
 
 	bar := pb.StartNew(numRequests)
@@ -109,27 +125,32 @@ func main() {
 		sem <- true
 		go func() {
 			defer func() { <-sem }()
-			fetchURL(ack, url, clients[i%concurrency])
+			clientNum := i % len(clients)
+			fetchURL(ack, url, clients[clientNum])
 			bar.Increment()
 		}()
 	}
 
+	bar.Finish()
+
 	var numOK int
 	var bytesTransferred int64
 	var responseTimes = make([]time.Duration, numRequests)
+	statusCounts := map[int]int{}
 
 	// Collect the responses
 	for i := 0; i < numRequests; i++ {
 		response := <-ack
 		if response.OK {
 			numOK++
+			statusCounts[response.StatusCode]++
 			if response.ContentLength != -1 {
 				bytesTransferred += response.ContentLength
 			}
 			responseTime := response.EndTime.Sub(response.StartTime)
 			responseTimes[i] = responseTime
 		} else {
-			fmt.Println("Error:", response.Error)
+			p.Println("Error:", response.Error)
 		}
 	}
 
@@ -148,14 +169,16 @@ func main() {
 			minResponseTime = responseTime
 		}
 	}
+	statusCountsString, _ := json.Marshal(statusCounts)
 
 	pctOK := int((float64(numOK) / float64(numRequests)) * 100)
 	avgResponseTime := time.Duration(float64(sumResponseTimes) / float64(numOK))
-	fmt.Printf("Responses OK: %d%%\n", pctOK)
-	fmt.Printf("Bytes Transferred: %d\n", bytesTransferred)
-	fmt.Printf("Avg Response Time: %v\n", avgResponseTime)
-	fmt.Printf("Min Response Time %v\n", minResponseTime)
-	fmt.Printf("Max Response Time %v\n", maxResponseTime)
+	p.Printf("Responses OK: %d%% (%d/%d)\n", pctOK, numOK, numRequests)
+	p.Printf("Status Codes: %s\n", statusCountsString)
+	p.Printf("Bytes Transferred: %d\n", bytesTransferred)
+	p.Printf("Avg Response Time: %v\n", avgResponseTime)
+	p.Printf("Min Response Time %v\n", minResponseTime)
+	p.Printf("Max Response Time %v\n", maxResponseTime)
 	if histogram {
 		printHistrogram(responseTimes, maxResponseTime, minResponseTime)
 	}
