@@ -208,6 +208,7 @@ func main() {
 		go func() {
 			defer func() { <-sem }()
 			fetchURL(ack, url, &client)
+			bar.Increment()
 		}()
 	}
 
@@ -216,12 +217,12 @@ func main() {
 	// Collect the responses
 	for i := 0; i < numRequests; i++ {
 		response := <-ack
-		bar.Increment()
 		summary.addResponse(response)
 		if response.OK != true && printErrors {
 			fmt.Println(response.Error)
 		}
 	}
+
 	bar.Finish()
 
 	summary.print()
