@@ -130,9 +130,10 @@ func (s *ResponseSummary) printHistogram() {
 		bucketStart := s.MinResponseTime + (time.Duration(bucketLength) * time.Duration(index))
 		bucketEnd := s.MinResponseTime + (time.Duration(bucketLength) * time.Duration(index+1))
 		fmt.Printf("(%3d%%) ", int(float64(bucket)*scalingFactor))
-		for i := 0; i < int(float64(bucket)*scalingFactor); i += 2 {
+		bricks := int(float64(bucket)*scalingFactor) / 2
+		for i := 0; i < bricks; i += 1 {
 			fmt.Print("∎")
-			if i == int(bucket)-1 {
+			if i == bricks-1 {
 				fmt.Print(" ")
 			}
 		}
