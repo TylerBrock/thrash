@@ -21,6 +21,16 @@ const DEFAULT_NUM_REQUESTS = 100
 const DEFAULT_CONCURRENCY = 1
 const DEFAULT_TIMEOUT = "60s"
 
+type Configuration struct {
+	Concurrency int
+	NumRequests int
+	Timeout     time.Duration
+	Histogram   bool
+	PrintErrors bool
+	Profile     bool
+	Url         string
+}
+
 type Response struct {
 	OK            bool
 	Error         error
@@ -170,54 +180,74 @@ func startProfiler() {
 	}()
 }
 
-func main() {
-	urlArg := os.Args[len(os.Args)-1]
-	_, err := url.ParseRequestURI(urlArg)
-	if err != nil {
-		fmt.Printf("Error: \"%s\" does not look like a valid url!\n", urlArg)
+func configure() Configuration {
+	config := Configuration{}
+	defaultTimeoutDuration, _ := time.ParseDuration(DEFAULT_TIMEOUT)
+	flag.IntVar(&config.Concurrency, "c", DEFAULT_CONCURRENCY, "how much concurrency")
+	flag.IntVar(&config.NumRequests, "n", DEFAULT_NUM_REQUESTS, "how many requests")
+	flag.DurationVar(&config.Timeout, "t", defaultTimeoutDuration, "request timeout in MS")
+	flag.BoolVar(&config.Histogram, "h", false, "print response time histogram")
+	flag.BoolVar(&config.PrintErrors, "e", false, "print errors")
+	flag.BoolVar(&config.Profile, "p", false, "start the profile server on port 6060")
+	flag.Parse()
+
+	flag.Usage = func() {
+		printUsage()
+	}
+
+	if len(os.Args) < 2 || os.Args[1] == "-help" {
+		printUsage()
 		os.Exit(1)
 	}
 
-	fmt.Println("Thrashing", urlArg)
-	var concurrency int
-	var numRequests int
-	var timeout time.Duration
-	var histogram bool
-	var printErrors bool
-	var profile bool
-	defaultTimeoutDuration, _ := time.ParseDuration(DEFAULT_TIMEOUT)
-	flag.IntVar(&concurrency, "c", DEFAULT_CONCURRENCY, "how much concurrency")
-	flag.IntVar(&numRequests, "n", DEFAULT_NUM_REQUESTS, "how many requests")
-	flag.DurationVar(&timeout, "t", defaultTimeoutDuration, "request timeout in MS")
-	flag.BoolVar(&histogram, "h", false, "print response time histogram")
-	flag.BoolVar(&printErrors, "e", false, "print errors")
-	flag.BoolVar(&profile, "p", false, "start the profile server on port 6060")
-	flag.Parse()
+	urlArg := os.Args[len(os.Args)-1]
+
+	_, err := url.ParseRequestURI(urlArg)
+	if err != nil {
+		fmt.Printf("Error: \"%s\" does not look like a valid url!\n", urlArg)
+		printUsage()
+		os.Exit(2)
+	} else {
+		config.Url = urlArg
+	}
+
+	return config
+}
+
+func printUsage() {
+	fmt.Fprintf(os.Stderr, "Usage: %s [flags] url\n", os.Args[0])
+	flag.PrintDefaults()
+}
+
+func main() {
+	config := configure()
+
+	fmt.Println("Thrashing", config.Url)
 
 	p := message.NewPrinter(message.MatchLanguage("en"))
-	p.Println("Concurrency", concurrency, "Num Requests", numRequests)
+	p.Println("Concurrency", config.Concurrency, "Num Requests", config.NumRequests)
 
-	if profile {
+	if config.Profile {
 		startProfiler()
 	}
 
-	sem := make(chan bool, concurrency)
-	ack := make(chan *Response, numRequests)
+	sem := make(chan bool, config.Concurrency)
+	ack := make(chan *Response, config.NumRequests)
 
 	tr := &http.Transport{
-		MaxIdleConns:        concurrency,
-		MaxIdleConnsPerHost: concurrency,
+		MaxIdleConns:        config.Concurrency,
+		MaxIdleConnsPerHost: config.Concurrency,
 	}
-	client := http.Client{Transport: tr, Timeout: timeout}
+	client := http.Client{Transport: tr, Timeout: config.Timeout}
 
-	bar := pb.StartNew(numRequests)
+	bar := pb.StartNew(config.NumRequests)
 
 	// Queue up the requests
-	for i := 0; i < numRequests; i++ {
+	for i := 0; i < config.NumRequests; i++ {
 		sem <- true
 		go func() {
 			defer func() { <-sem }()
-			fetchURL(ack, urlArg, &client)
+			fetchURL(ack, config.Url, &client)
 			bar.Increment()
 		}()
 	}
@@ -225,10 +255,10 @@ func main() {
 	summary := ResponseSummary{}
 
 	// Collect the responses
-	for i := 0; i < numRequests; i++ {
+	for i := 0; i < config.NumRequests; i++ {
 		response := <-ack
 		summary.addResponse(response)
-		if response.OK != true && printErrors {
+		if response.OK != true && config.PrintErrors {
 			fmt.Println(response.Error)
 		}
 	}
@@ -236,7 +266,7 @@ func main() {
 	bar.Finish()
 
 	summary.print()
-	if histogram {
+	if config.Histogram {
 		summary.printHistogram()
 	}
 }
