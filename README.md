@@ -4,7 +4,7 @@ Golang HTTP Micro Benchmarker
 ## Run Via Docker
 
 ```
-docker run tbrock/thrash
+docker run --rm tbrock/thrash
 ```
 
 ## Usage
