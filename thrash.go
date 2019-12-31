@@ -11,6 +11,7 @@ import (
 	_ "net/http/pprof"
 	"net/url"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/cheggaaa/pb"
@@ -29,6 +30,9 @@ type Configuration struct {
 	PrintErrors bool
 	Profile     bool
 	Url         string
+	Headers     map[string]string
+	Username    string
+	Password    string
 }
 
 type Response struct {
@@ -142,10 +146,18 @@ func (s *ResponseSummary) printHistogram() {
 	}
 }
 
-func fetchURL(ack chan<- *Response, url string, client *http.Client) {
-	req, err := http.NewRequest("GET", url, nil)
+func fetchURL(ack chan<- *Response, config Configuration, client *http.Client) {
+	req, err := http.NewRequest("GET", config.Url, nil)
 	if err != nil {
 		fmt.Println("Error creating new request")
+	}
+
+	if config.Username != "" && config.Password != "" {
+		req.SetBasicAuth(config.Username, config.Password)
+	}
+
+	for key, value := range config.Headers {
+		req.Header.Add(key, value)
 	}
 
 	response := &Response{OK: true, StartTime: time.Now()}
@@ -181,15 +193,18 @@ func startProfiler() {
 	}()
 }
 
-func configure() Configuration {
+func configure() *Configuration {
 	config := Configuration{}
 	defaultTimeoutDuration, _ := time.ParseDuration(DEFAULT_TIMEOUT)
 	flag.IntVar(&config.Concurrency, "c", DEFAULT_CONCURRENCY, "how much concurrency")
 	flag.IntVar(&config.NumRequests, "n", DEFAULT_NUM_REQUESTS, "how many requests")
 	flag.DurationVar(&config.Timeout, "t", defaultTimeoutDuration, "request timeout in MS")
-	flag.BoolVar(&config.Histogram, "h", false, "print response time histogram")
+	flag.BoolVar(&config.Histogram, "d", false, "print response time histogram")
 	flag.BoolVar(&config.PrintErrors, "e", false, "print errors")
-	flag.BoolVar(&config.Profile, "p", false, "start the profile server on port 6060")
+	//flag.BoolVar(&config.Profile, "p", false, "start the profile server on port 6060")
+	flag.StringVar(&config.Username, "u", "", "username for basic auth")
+	flag.StringVar(&config.Password, "p", "", "password for basic auth")
+	headerStr := flag.String("h", "", "request headers key:value")
 	flag.Parse()
 
 	flag.Usage = func() {
@@ -212,7 +227,21 @@ func configure() Configuration {
 		config.Url = urlArg
 	}
 
-	return config
+	if *headerStr != "" {
+		config.Headers = make(map[string]string)
+		headerSlice := strings.Fields(*headerStr)
+		for _, header := range headerSlice {
+			parts := strings.Split(header, ":")
+			if len(parts) != 2 {
+				return nil
+			}
+			key := parts[0]
+			value := parts[1]
+			config.Headers[key] = value
+		}
+	}
+
+	return &config
 }
 
 func printUsage() {
@@ -221,7 +250,14 @@ func printUsage() {
 }
 
 func main() {
-	config := configure()
+	configPtr := configure()
+
+	if configPtr == nil {
+		fmt.Println("Error in configuration! Exiting!")
+		os.Exit(1)
+	}
+
+	config := *configPtr
 
 	fmt.Println("Thrashing", config.Url)
 
@@ -248,7 +284,7 @@ func main() {
 		sem <- true
 		go func() {
 			defer func() { <-sem }()
-			fetchURL(ack, config.Url, &client)
+			fetchURL(ack, config, &client)
 			bar.Increment()
 		}()
 	}
